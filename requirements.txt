@@ -1,0 +1,6 @@
+# 童心AI绘本馆 —— Python 依赖清单
+# 安装方式：pip install -r requirements.txt
+
+openai>=1.0.0          # 调用豆包/火山方舟、DeepSeek 等 OpenAI 兼容端点
+gradio>=4.0.0          # Web UI 框架（教师端 / 幼儿端）
+python-dotenv>=1.0.0   # 从 .env 读取环境变量（可选，便于管理 API Key）
