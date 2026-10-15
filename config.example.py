@@ -1,50 +1,30 @@
 # -*- coding: utf-8 -*-
 """
 童心AI绘本馆 —— 配置示例文件
-================================
-使用方法：
-    1. 把本文件复制一份，命名为 config.py（与 app.py 同级目录）
-    2. 在下面填入你自己的 API Key、Base URL、模型名
-    3. 保存后直接运行 python app.py 即可
-
-config.py 不会被上传到任何代码仓库（已在 .gitignore 中忽略），
-请放心填入真实 Key。
+使用方法：cp config.example.py config.py，填入自己的 Key。
 """
 
-# ============================================================
-# 一、大模型接入配置（OpenAI 兼容协议）
-# ============================================================
-
-# --- 方案 A：豆包 / 火山方舟（推荐，面向幼教中文表现最佳）---
-# 获取地址：https://console.volcengine.com/ark
-# 在线推理接入点（Endpoint）创建后，把模型名填到 MODEL_NAME
+# 一、大模型接入（OpenAI 兼容协议）
 API_KEY = "在这里填你的-火山方舟-API-Key"
 BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-# 模型名：填入你在火山方舟创建的“推理接入点 ID”或模型名，例如
-#   doubao-seed-1-6-250615  （占位符，请改成你自己的 endpoint）
 MODEL_NAME = "doubao-seed-1-6-250615"
 
-# --- 方案 B：DeepSeek（备用 / 国内可直连）---
-# 取消下面三行的注释，并注释掉上面方案 A 的三行，即可切换
-# API_KEY = "在这里填你的-DeepSeek-API-Key"
-# BASE_URL = "https://api.deepseek.com"
-# MODEL_NAME = "deepseek-chat"
-
-# ============================================================
 # 二、可选：模型生成参数
-# ============================================================
-# 控制“创造力”：0.0 最稳定（适合生成结构化 JSON），1.0 最发散
-# 绘本故事 / 活动方案建议 0.7；幼儿对话建议 0.8（更活泼）
 TEMPERATURE = 0.7
-# 单次回复最大 token 数
 MAX_TOKENS = 2000
-# 请求超时（秒）
 REQUEST_TIMEOUT = 60
 
-# ============================================================
 # 三、应用运行配置
-# ============================================================
-# Gradio 启动端口
 GRADIO_SERVER_PORT = 7860
-# 是否开启分享链接（False 仅本机访问；True 会生成一个临时公网链接）
 GRADIO_SHARE = False
+
+# 四、可选：幼儿语音输入 / 语音播报（ASR + TTS）
+# 不配也能正常用，幼儿对话仍可由老师代打字。
+# 申请：https://console.volcengine.com/speech/overview → 创建应用 → 勾选一句话识别+语音合成
+VOICE_APP_ID = ""
+VOICE_ACCESS_TOKEN = ""
+ASR_MODEL_NAME = "bigmodel"
+TTS_VOICE_TYPE = "BV700_streaming"
+
+# 五、可选：本地兜底 ASR（faster-whisper，免费离线）
+# pip install faster-whisper 后自动启用，不用改配置。
