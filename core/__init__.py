@@ -8,19 +8,13 @@ from .activity_planner import ActivityPlanner, ActivityPlan
 from .evaluation_engine import EvaluationEngine, ObservationRecord
 from .print_formatter import format_print_version
 from .home_school_prompter import generate_home_school_script
+from .voice_assistant import VoiceAssistant
 
 __all__ = [
-    "LLMClient",
-    "StoryGenerator",
-    "StoryResult",
-    "Scene",
-    "DialogueAgent",
-    "DialogueState",
-    "DialogueResponse",
-    "ActivityPlanner",
-    "ActivityPlan",
-    "EvaluationEngine",
-    "ObservationRecord",
-    "format_print_version",
-    "generate_home_school_script",
+    "LLMClient", "StoryGenerator", "StoryResult", "Scene",
+    "DialogueAgent", "DialogueState", "DialogueResponse",
+    "ActivityPlanner", "ActivityPlan",
+    "EvaluationEngine", "ObservationRecord",
+    "format_print_version", "generate_home_school_script",
+    "VoiceAssistant",
 ]
