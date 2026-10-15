@@ -7,13 +7,14 @@
 然后在浏览器打开终端里提示的本地地址（默认 http://127.0.0.1:7860）。
 
 三个 Tab：
-  ① 教师端 - 生成绘本与活动方案
+  ① 教师端 - 生成绘本与活动方案（含打印版、家长群话术）
   ② 幼儿端 - 与 AI 角色对话
-  ③ 教师端 - 查看观察记录
+  ③ 教师端 - 查看观察记录（Markdown 表格，可直接贴到观察手册）
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -31,13 +32,36 @@ from core import (  # noqa: E402
     DialogueAgent,
     ActivityPlanner,
     EvaluationEngine,
+    format_print_version,
+    generate_home_school_script,
 )
+from core.story_generator import StoryResult  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("app")
+
+
+# ---------------------------------------------------------------------- #
+# 主题库加载
+# ---------------------------------------------------------------------- #
+THEMES_FILE = ROOT / "knowledge_base" / "kindergarten_themes.json"
+
+
+def load_theme_library() -> List[Dict[str, Any]]:
+    """读取主题库 JSON；失败时返回空列表（不影响主流程）。"""
+    try:
+        data = json.loads(THEMES_FILE.read_text(encoding="utf-8"))
+        return data.get("themes", [])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("主题库加载失败：%s", e)
+        return []
+
+
+THEMES = load_theme_library()
+THEME_CHOICES = ["（自己输入主题）"] + [t["theme_name"] for t in THEMES]
 
 
 # ---------------------------------------------------------------------- #
@@ -73,25 +97,46 @@ class AppServices:
 
 SERVICES = AppServices()
 
-# 当前会话共享数据：刚生成的绘本 + 年龄段 + DialogueAgent 状态
-CURRENT_SESSION: Dict[str, Any] = {"story": None, "age_group": "中班 4-5 岁", "state": None}
+# 当前会话共享数据：刚生成的绘本对象 + 年龄段 + DialogueAgent 状态
+CURRENT_SESSION: Dict[str, Any] = {
+    "story": None,         # StoryResult 对象（打印版要用）
+    "story_dict": None,    # dict 形式（对话/活动方案要用）
+    "theme": "",
+    "age_group": "中班 4-5 岁",
+    "state": None,
+}
 
 
 # ---------------------------------------------------------------------- #
 # Tab ①：教师端 - 生成绘本与活动方案
 # ---------------------------------------------------------------------- #
 def generate_story_and_plan(
-    theme: str,
+    theme_choice: str,
+    theme_custom: str,
     age_group: str,
     want_language: bool,
     want_social: bool,
     want_science: bool,
     want_art: bool,
     want_health: bool,
-) -> Tuple[str, str]:
-    """返回 (绘本 Markdown, 活动方案 Markdown)。"""
+) -> Tuple[str, str, str]:
+    """返回 (绘本 Markdown, 活动方案 Markdown, 打印版占位)。"""
+    # 主题：下拉选"自己输入"时用自定义框
+    theme = (theme_custom or "").strip() if theme_choice == "（自己输入主题）" else (theme_choice or "").strip()
+
     if not SERVICES.ready():
-        return f"⚠️ 模型尚未配置好：{SERVICES.init_error}", "请先按《安装手册.md》填写 config.py。"
+        return (
+            f"⚠️ 模型尚未配置好：{SERVICES.init_error}",
+            "请先按《安装手册.md》填写 config.py。",
+            "",
+        )
+
+    if not theme:
+        return (
+            "请先选一个主题，或者在下面的输入框里自己写一个孩子生活里的小话题哦。",
+            "",
+            "",
+        )
 
     domain_tags: List[str] = []
     if want_language:
@@ -108,15 +153,22 @@ def generate_story_and_plan(
         domain_tags = ["语言", "社会"]
 
     try:
-        story = SERVICES.story_gen.generate(
+        story: StoryResult = SERVICES.story_gen.generate(
             theme=theme, age_group=age_group, domain_tags=domain_tags
         )
         plan = SERVICES.planner.plan(story.to_dict(), age_group=age_group)
+    except ValueError as e:
+        # 用户输入类问题，直接友好提示
+        logger.info("生成被拦下：%s", e)
+        return f"🙈 {e}", "", ""
     except Exception as e:  # noqa: BLE001
         logger.exception("生成失败")
-        return f"❌ 生成失败：{e}", ""
+        return f"❌ 生成失败：{e}", "", ""
 
-    CURRENT_SESSION["story"] = story.to_dict()
+    # 缓存会话数据
+    CURRENT_SESSION["story"] = story
+    CURRENT_SESSION["story_dict"] = story.to_dict()
+    CURRENT_SESSION["theme"] = theme
     CURRENT_SESSION["age_group"] = age_group
     CURRENT_SESSION["state"] = None  # 换了新绘本，重置对话状态
 
@@ -133,6 +185,7 @@ def generate_story_and_plan(
     )
     story_md = (
         f"# 📖 《{story.title}》\n\n"
+        f"**主题**：{theme}　**年龄段**：{age_group}\n\n"
         f"**登场角色**：{chars_text}\n\n"
         f"## 故事正文\n\n{story.story_text}\n\n"
         f"## 分镜与画面建议\n\n{scenes_text}\n\n"
@@ -145,6 +198,8 @@ def generate_story_and_plan(
         f"   - 幼儿：{p.get('child_action', '')}"
         for i, p in enumerate(plan.process)
     )
+    # 家长群话术
+    script = generate_home_school_script(theme=theme, story_title=f"《{story.title}》", age_group=age_group)
     plan_md = (
         f"# 🎯 活动方案：{plan.activity_name}\n\n"
         f"- 对象：{plan.target_age}\n- 时长：{plan.duration} 分钟\n\n"
@@ -154,15 +209,33 @@ def generate_story_and_plan(
         + f"\n\n## 活动过程\n{process_md}"
         + f"\n\n## 延伸游戏\n- " + "\n- ".join(plan.extension_games)
         + f"\n\n## 家园共育\n- " + "\n- ".join(plan.home_school_cooperation)
+        + f"\n\n---\n\n## 💬 家长群话术（可直接复制）\n\n> {script}"
     )
-    return story_md, plan_md
+    # 打印版先占位，等老师点按钮再生成
+    print_placeholder = "_（生成成功后，点下面的「🖨️ 生成打印版」按钮，就能得到一份可打印的 A4 文本。）_"
+    return story_md, plan_md, print_placeholder
+
+
+def on_print_clicked() -> str:
+    story = CURRENT_SESSION.get("story")
+    if not story:
+        return "还没有绘本可以打印哦，请先生成一本。"
+    try:
+        text = format_print_version(
+            story,
+            age_group=CURRENT_SESSION.get("age_group", "中班 4-5 岁"),
+        )
+        return text
+    except Exception as e:  # noqa: BLE001
+        logger.exception("打印版生成失败")
+        return f"❌ 打印版生成失败：{e}"
 
 
 # ---------------------------------------------------------------------- #
 # Tab ②：幼儿端 - 与 AI 角色对话
 # ---------------------------------------------------------------------- #
 def tab2_welcome() -> str:
-    story = CURRENT_SESSION.get("story")
+    story = CURRENT_SESSION.get("story_dict")
     if not story:
         return "（请先在【Tab①】生成一本绘本，再回到这里开始和 AI 角色对话。）"
     chars = story.get("characters", [])
@@ -175,15 +248,18 @@ def tab2_welcome() -> str:
 
 
 def tab2_respond(
-    child_msg: str, chat_history: List[List[str]]
-) -> Tuple[List[List[str]], str, str]:
-    """返回 (新 chat_history, 欢迎语刷新, 教师提示)。"""
+    child_msg: str, chat_history: List[Dict[str, str]]
+) -> Tuple[List[Dict[str, str]], str, str]:
+    """Gradio 6 Chatbot 使用 messages 格式：list[{"role":..., "content":...}]。"""
+    chat_history = chat_history or []
     if not SERVICES.ready():
-        chat_history.append([child_msg or "（空）", f"模型未配置：{SERVICES.init_error}"])
+        chat_history.append({"role": "user", "content": child_msg or "（空）"})
+        chat_history.append({"role": "assistant", "content": f"模型未配置：{SERVICES.init_error}"})
         return chat_history, tab2_welcome(), ""
-    story = CURRENT_SESSION.get("story")
+    story = CURRENT_SESSION.get("story_dict")
     if not story:
-        chat_history.append([child_msg or "（空）", "请先在【Tab①】生成一本绘本哦。"])
+        chat_history.append({"role": "user", "content": child_msg or "（空）"})
+        chat_history.append({"role": "assistant", "content": "请先在【Tab①】生成一本绘本哦。"})
         return chat_history, tab2_welcome(), ""
 
     if CURRENT_SESSION["state"] is None:
@@ -192,7 +268,8 @@ def tab2_respond(
         )
 
     resp = SERVICES.dialogue.respond(CURRENT_SESSION["state"], child_msg)
-    chat_history.append([child_msg, resp.reply])
+    chat_history.append({"role": "user", "content": child_msg or "（空）"})
+    chat_history.append({"role": "assistant", "content": resp.reply})
     hint = ""
     if resp.teacher_note:
         hint = f"💡 **给老师的小提示**：{resp.teacher_note}（本轮领域标签：{resp.domain_tag}）"
@@ -200,7 +277,7 @@ def tab2_respond(
 
 
 # ---------------------------------------------------------------------- #
-# Tab ③：教师端 - 查看观察记录
+# Tab ③：教师端 - 查看观察记录（Markdown 表格）
 # ---------------------------------------------------------------------- #
 def tab3_make_observation() -> str:
     if not SERVICES.ready():
@@ -210,17 +287,11 @@ def tab3_make_observation() -> str:
         return "还没有可分析的对话记录。请先在【Tab②】和孩子聊几句。"
     try:
         rec = SERVICES.evaluator.evaluate(state.observation_log)
+    except ValueError as e:
+        return f"🙈 {e}"
     except Exception as e:  # noqa: BLE001
         return f"❌ 分析失败：{e}"
-    return (
-        f"# 📝 形成性观察记录（{rec.child_anonymous_id}）\n\n"
-        f"- 发言次数：**{rec.message_count}**\n"
-        f"- 主动提问：**{rec.question_count}** 次\n"
-        f"- 兴趣度（1-5）：**{rec.interest_level}**\n\n"
-        f"## 语言观察\n{rec.language_observation}\n\n"
-        f"## 社会性观察\n{rec.social_observation}\n\n"
-        f"## 给教师的建议\n{rec.teacher_note_suggestion}"
-    )
+    return rec.to_formatted_table()
 
 
 # ---------------------------------------------------------------------- #
@@ -242,9 +313,14 @@ def build_ui() -> gr.Blocks:
         with gr.Tab("① 教师端：生成绘本与活动"):
             with gr.Row():
                 with gr.Column(scale=1):
-                    theme = gr.Textbox(
-                        label="绘本主题",
-                        placeholder="例如：分享玩具 / 我敢一个人睡 / 秋天来了",
+                    theme_dd = gr.Dropdown(
+                        choices=THEME_CHOICES,
+                        value=THEME_CHOICES[1] if len(THEME_CHOICES) > 1 else "（自己输入主题）",
+                        label="选一个常用主题（20+ 个真实幼儿园话题）",
+                    )
+                    theme_custom = gr.Textbox(
+                        label="或者自己写一个主题",
+                        placeholder="例如：我敢一个人睡 / 小蚂蚁搬家",
                     )
                     age = gr.Radio(
                         ["小班 3-4 岁", "中班 4-5 岁", "大班 5-6 岁"],
@@ -258,14 +334,17 @@ def build_ui() -> gr.Blocks:
                     cb_art = gr.Checkbox(value=False, label="艺术")
                     cb_hea = gr.Checkbox(value=False, label="健康")
                     btn_gen = gr.Button("✨ 生成绘本与活动方案", variant="primary")
+                    btn_print = gr.Button("🖨️ 生成打印版（A4 可复印）")
                 with gr.Column(scale=2):
                     story_out = gr.Markdown(label="绘本")
                     plan_out = gr.Markdown(label="活动方案")
+                    print_out = gr.Markdown(label="打印版")
             btn_gen.click(
                 fn=generate_story_and_plan,
-                inputs=[theme, age, cb_lang, cb_soc, cb_sci, cb_art, cb_hea],
-                outputs=[story_out, plan_out],
+                inputs=[theme_dd, theme_custom, age, cb_lang, cb_soc, cb_sci, cb_art, cb_hea],
+                outputs=[story_out, plan_out, print_out],
             )
+            btn_print.click(fn=on_print_clicked, outputs=print_out)
 
         with gr.Tab("② 幼儿端：和角色对话"):
             welcome_md = gr.Markdown(tab2_welcome())
@@ -290,6 +369,9 @@ def build_ui() -> gr.Blocks:
             )
 
         with gr.Tab("③ 教师端：查看观察记录"):
+            gr.Markdown(
+                "下面会输出一张 Markdown 表格，**直接复制就能贴到《幼儿观察手册》里**。"
+            )
             btn_eval = gr.Button("📝 生成本次活动的形成性观察记录", variant="primary")
             eval_out = gr.Markdown()
             btn_eval.click(fn=tab3_make_observation, outputs=eval_out)

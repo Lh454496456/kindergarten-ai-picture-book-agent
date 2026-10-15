@@ -26,6 +26,18 @@ GUIDE_FILE = PROJECT_ROOT / "knowledge_base" / "five_domains_guide.md"
 VALID_AGE_GROUPS = {"小班 3-4 岁", "中班 4-5 岁", "大班 5-6 岁"}
 VALID_DOMAINS = {"健康", "语言", "社会", "科学", "艺术"}
 
+# 主题长度上限（字符数）：超过视为输入异常
+MAX_THEME_LEN = 120
+
+# 主题级敏感词：出现这些词时直接拒绝生成，引导老师换一个更适合 3-6 岁的主题
+THEME_BLOCK_KEYWORDS = [
+    "暴力", "恐怖", "杀人", "自杀", "色情", "赌博", "毒品",
+    "妈妈死", "爸爸死", "葬礼", "自杀式",
+]
+
+# 年龄段差异化提示词文件
+AGE_DIFF_FILE = PROJECT_ROOT / "prompts" / "story_generator_age_diff.md"
+
 
 @dataclass
 class Scene:
@@ -64,6 +76,33 @@ class StoryGenerator:
         guide = self._read_text(GUIDE_FILE, optional=True)
         if guide:
             self.system_prompt += "\n\n## 附：五大领域发展目标速查（生成时请对齐年龄段）\n\n" + guide
+        # 年龄段差异化提示词（按 age_group 取用）
+        self.age_diff_text = self._read_text(AGE_DIFF_FILE, optional=True)
+
+    def _age_diff_fragment(self, age_group: str) -> str:
+        """从 age_diff 文件里抽出对应年龄段的片段。
+
+        文件格式约定：用 ``## 小班`` / ``## 中班`` / ``## 大班`` 三个二级标题分段。
+        找不到就返回空串，不影响主流程。
+        """
+        if not self.age_diff_text:
+            return ""
+        head_map = {
+            "小班 3-4 岁": ("## 小班", "## 中班"),
+            "中班 4-5 岁": ("## 中班", "## 大班"),
+            "大班 5-6 岁": ("## 大班", None),
+        }
+        start_marker, end_marker = head_map.get(age_group, (None, None))
+        if not start_marker or start_marker not in self.age_diff_text:
+            return ""
+        start = self.age_diff_text.find(start_marker)
+        if end_marker:
+            end = self.age_diff_text.find(end_marker, start + len(start_marker))
+            if end == -1:
+                end = len(self.age_diff_text)
+        else:
+            end = len(self.age_diff_text)
+        return self.age_diff_text[start:end].strip()
 
     @staticmethod
     def _read_text(path: Path, optional: bool = False) -> str:
@@ -91,7 +130,12 @@ class StoryGenerator:
         # 参数校验
         theme = (theme or "").strip()
         if not theme:
-            raise ValueError("主题不能为空，请填写例如'分享玩具'。")
+            raise ValueError("主题还空着呢，请写一个孩子生活里的小话题，比如'分享玩具''好好午睡'。")
+        if len(theme) > MAX_THEME_LEN:
+            raise ValueError(
+                f"主题太长啦（{len(theme)} 字），我们建议一句话说清楚就好，"
+                f"控制在 {MAX_THEME_LEN} 字以内哦。"
+            )
         if age_group not in VALID_AGE_GROUPS:
             raise ValueError(f"年龄段必须是 {sorted(VALID_AGE_GROUPS)} 之一，收到：{age_group}")
         domain_tags = domain_tags or ["语言", "社会"]
@@ -99,14 +143,28 @@ class StoryGenerator:
         if bad:
             raise ValueError(f"领域标签必须来自 {sorted(VALID_DOMAINS)}，收到非法值：{bad}")
 
+        # 主题级安全兜底：明显不适合 3-6 岁的主题直接拦下
+        hit = [kw for kw in THEME_BLOCK_KEYWORDS if kw in theme]
+        if hit:
+            raise ValueError(
+                f"「{theme}」这个主题不太适合给 3-6 岁的孩子读哦。"
+                f"我们换成贴近孩子日常生活的话题吧，比如'我敢一个人睡''想妈妈了怎么办'。"
+            )
+
         user_msg = json.dumps(
             {"theme": theme, "age_group": age_group, "domain_tags": domain_tags},
             ensure_ascii=False,
         )
         logger.info("开始生成绘本：theme=%s, age=%s, tags=%s", theme, age_group, domain_tags)
 
+        # 按年龄段拼差异化提示词
+        system_prompt = self.system_prompt
+        fragment = self._age_diff_fragment(age_group)
+        if fragment:
+            system_prompt += "\n\n## 本段年龄段写作要求（必须严格遵守）\n\n" + fragment
+
         raw = self.llm.chat_json(
-            system_prompt=self.system_prompt,
+            system_prompt=system_prompt,
             user_message=user_msg,
             temperature=0.8,
         )
